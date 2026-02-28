@@ -35,13 +35,18 @@ def _get_exa_client():
     return Exa(api_key=api_key)
 
 
-def search_topic(topic: str, max_results: int = 5) -> List[dict]:
+def get_cache_stats() -> dict:
+    """Return cache stats for /vibe."""
+    return {"cached_queries": len(_cache), "max": CACHE_MAX}
+
+
+def search_topic(topic: str, max_results: int = 5, skip_cache: bool = False) -> List[dict]:
     """
     Search web for a topic using Exa.
     Returns list of {title, url, snippet} for bookshelf display.
     """
     key = (topic.strip().lower(), max_results)
-    if key in _cache:
+    if not skip_cache and key in _cache:
         return _cache[key]
     try:
         exa = _get_exa_client()
@@ -52,8 +57,8 @@ def search_topic(topic: str, max_results: int = 5) -> List[dict]:
             contents={"text": {"max_characters": 20000}},
         )
         out = []
-        for r in results.results:
-            # Exa result: .title, .url; .text when contents requested
+        for i, r in enumerate(results.results):
+            url = getattr(r, "url", "") or ""
             text = getattr(r, "text", None) or getattr(r, "content", None) or ""
             if isinstance(text, list):
                 text = " ".join(str(x) for x in text)[:500]
@@ -61,24 +66,57 @@ def search_topic(topic: str, max_results: int = 5) -> List[dict]:
                 text = _safe_str(str(text)[:500])
             out.append({
                 "title": _safe_str(getattr(r, "title", "") or ""),
-                "url": getattr(r, "url", "") or "",
+                "url": url,
                 "snippet": text or _safe_str(getattr(r, "description", "") or ""),
+                "score": 1.0 - (i * 0.1),
+                "type": "video" if "youtube.com" in url or "youtu.be" in url else "article",
             })
-        if len(_cache) < CACHE_MAX:
+        if not skip_cache and len(_cache) < CACHE_MAX:
             _cache[key] = out
         return out
     except Exception as e:
-        return [{"title": "Error", "url": "", "snippet": str(e)}]
+        return [{"title": "Error", "url": "", "snippet": str(e), "score": 0, "type": "article"}]
 
 
-def get_bookshelf_resources(topics: List[str], per_topic: int = 3) -> List[dict]:
+def search_youtube(topic: str, max_results: int = 5) -> List[dict]:
+    """Search YouTube only (Exa restricted to youtube.com)."""
+    try:
+        exa = _get_exa_client()
+        results = exa.search(
+            query=topic,
+            type="auto",
+            num_results=max_results,
+            include_domains=["youtube.com", "www.youtube.com"],
+            contents={"text": {"max_characters": 20000}},
+        )
+        out = []
+        for i, r in enumerate(results.results):
+            url = getattr(r, "url", "") or ""
+            text = getattr(r, "text", None) or getattr(r, "content", None) or ""
+            if isinstance(text, list):
+                text = " ".join(str(x) for x in text)[:500]
+            else:
+                text = _safe_str(str(text)[:500])
+            out.append({
+                "title": _safe_str(getattr(r, "title", "") or ""),
+                "url": url,
+                "snippet": text or _safe_str(getattr(r, "description", "") or ""),
+                "score": 1.0 - (i * 0.1),
+                "type": "video",
+            })
+        return out
+    except Exception as e:
+        return [{"title": "Error", "url": "", "snippet": str(e), "score": 0, "type": "video"}]
+
+
+def get_bookshelf_resources(topics: List[str], per_topic: int = 3, skip_cache: bool = False) -> List[dict]:
     """For each topic, fetch resources and tag with topic. Frontend can show on bookshelf."""
     resources = []
-    for topic in topics:
-        if not topic or not topic.strip():
+    for t in topics:
+        if not t or not t.strip():
             continue
-        topic = topic.strip()
-        for item in search_topic(topic, max_results=per_topic):
-            item["topic"] = topic
+        t = t.strip()
+        for item in search_topic(t, max_results=per_topic, skip_cache=skip_cache):
+            item["topic"] = t
             resources.append(item)
     return resources

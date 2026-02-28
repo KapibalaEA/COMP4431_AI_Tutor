@@ -17,13 +17,15 @@ try:
 except ImportError:
     pass
 # Use Exa when EXA_API_KEY is set, else DuckDuckGo
+_SEARCH_BACKEND = "duckduckgo"
 try:
     if os.environ.get("EXA_API_KEY"):
-        from app.search_exa import search_topic, get_bookshelf_resources
+        from app.search_exa import search_topic, search_youtube, get_bookshelf_resources, get_cache_stats
+        _SEARCH_BACKEND = "exa"
     else:
-        from app.search import search_topic, get_bookshelf_resources
+        from app.search import search_topic, search_youtube, get_bookshelf_resources, get_cache_stats
 except ImportError:
-    from app.search import search_topic, get_bookshelf_resources
+    from app.search import search_topic, search_youtube, get_bookshelf_resources, get_cache_stats
 
 Base.metadata.create_all(bind=engine)# create the tables in the database, if they do not exist already.
 
@@ -44,23 +46,87 @@ class BookshelfRequest(BaseModel):
     per_topic: int = 3
 
 
+class SpeechRequest(BaseModel):
+    """Text to convert to speech (TTS) for NPC dialogue."""
+    text: str
+    lang: str = "en"
+
+
+@app.get("/vibe")
+def vibe():
+    """Health / vibe check: backend in use, cache stats."""
+    cache = get_cache_stats()
+    message = "Exa is powering the bookshelf. Cache is saving your quota." if _SEARCH_BACKEND == "exa" else "DuckDuckGo fallback is active. Set EXA_API_KEY for Exa."
+    return {"status": "chill", "ready": True, "backend": _SEARCH_BACKEND, "cache": cache, "message": message}
+
+
 @app.get("/search")
-def search(topic: str = "merge sort algorithm", max_results: int = 5):
-    """Single-topic search. GET /search?topic=merge+sort&max_results=5"""
-    return {"topic": topic, "results": search_topic(topic, max_results=max_results)}
+def search(
+    topic: str = "merge sort algorithm",
+    max_results: int = 5,
+    content_type: str | None = None,
+):
+    """Single-topic search. content_type=video for YouTube/videos only."""
+    results = search_topic(topic, max_results=max_results)
+    if content_type:
+        results = [r for r in results if r.get("type") == content_type]
+    return {"topic": topic, "results": results}
+
+
+@app.get("/search/youtube")
+def search_youtube_endpoint(topic: str = "quadratic equation tutorial", max_results: int = 5):
+    """Search YouTube only."""
+    return {"topic": topic, "results": search_youtube(topic, max_results=max_results)}
 
 
 @app.get("/bookshelf")
-def bookshelf(topics: str = "merge sort,binary search,divide and conquer", per_topic: int = 3):
-    """Resources for 3D bookshelf. GET /bookshelf?topics=topic1,topic2 or POST with JSON body."""
+def bookshelf(
+    topics: str = "merge sort,binary search,divide and conquer",
+    per_topic: int = 3,
+    content_type: str | None = None,
+):
+    """Resources for 3D bookshelf. content_type=video for YouTube only."""
     topic_list = [t.strip() for t in topics.split(",") if t.strip()]
-    return {"resources": get_bookshelf_resources(topic_list, per_topic=per_topic)}
+    resources = get_bookshelf_resources(topic_list, per_topic=per_topic)
+    if content_type:
+        resources = [r for r in resources if r.get("type") == content_type]
+    return {"resources": resources}
 
 
 @app.post("/bookshelf")
-def bookshelf_post(body: BookshelfRequest):
-    """Same as GET but topics in body. Person 2 can send {"topics": ["..."], "per_topic": 3}."""
-    return {"resources": get_bookshelf_resources(body.topics, per_topic=body.per_topic)}
+def bookshelf_post(body: BookshelfRequest, content_type: str | None = None):
+    """Same as GET but topics in body. Add ?content_type=video for YouTube only."""
+    resources = get_bookshelf_resources(body.topics, per_topic=body.per_topic)
+    if content_type:
+        resources = [r for r in resources if r.get("type") == content_type]
+    return {"resources": resources}
+
+
+@app.post("/bookshelf/refresh")
+def bookshelf_refresh(body: BookshelfRequest):
+    """Re-fetch resources (bypass cache)."""
+    return {"resources": get_bookshelf_resources(body.topics, per_topic=body.per_topic, skip_cache=True)}
+
+
+# ---- Person 3: NPC speech (TTS) ----
+@app.post("/speech", response_class=Response)
+def speech(body: SpeechRequest):
+    """Text-to-speech: send text, get back audio (MP3). Uses gTTS. Body: {"text": "...", "lang": "en"}."""
+    try:
+        from gtts import gTTS
+    except ImportError:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="gTTS not installed. pip install gtts")
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="text is required and cannot be empty")
+    if len(text) > 2000:
+        text = text[:2000] + "."
+    tts = gTTS(text=text, lang=body.lang, slow=False)
+    import io
+    buf = io.BytesIO()
+    tts.write_to_fp(buf)
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="audio/mpeg")
 
 
 # title string content string, we can use pydantic to create a model for the post, and then use that model to validate the data that is sent to the server. This way we can ensure that the data is in the correct format and that it contains all the required fields.

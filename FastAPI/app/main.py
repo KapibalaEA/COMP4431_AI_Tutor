@@ -10,7 +10,20 @@ import time
 from sqlalchemy.orm import Session
 from app.database import Base ,engine, get_db
 from app import models  # ensures Post is registered # ensures Post is registered
-from app.search import search_topic, get_bookshelf_resources
+import os
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+# Use Exa when EXA_API_KEY is set, else DuckDuckGo
+try:
+    if os.environ.get("EXA_API_KEY"):
+        from app.search_exa import search_topic, get_bookshelf_resources
+    else:
+        from app.search import search_topic, get_bookshelf_resources
+except ImportError:
+    from app.search import search_topic, get_bookshelf_resources
 
 Base.metadata.create_all(bind=engine)# create the tables in the database, if they do not exist already.
 
@@ -26,6 +39,11 @@ app.add_middleware(
 )
 
 # ---- Person 3: Web Scraper Agent (bookshelf) ----
+class BookshelfRequest(BaseModel):
+    topics: list[str]
+    per_topic: int = 3
+
+
 @app.get("/search")
 def search(topic: str = "merge sort algorithm", max_results: int = 5):
     """Single-topic search. GET /search?topic=merge+sort&max_results=5"""
@@ -40,9 +58,9 @@ def bookshelf(topics: str = "merge sort,binary search,divide and conquer", per_t
 
 
 @app.post("/bookshelf")
-def bookshelf_post(topics: list[str] = Body(..., example=["merge sort", "binary search"]), per_topic: int = 3):
-    """Same as GET but topics in body. Person 2 can send extracted topics here."""
-    return {"resources": get_bookshelf_resources(topics, per_topic=per_topic)}
+def bookshelf_post(body: BookshelfRequest):
+    """Same as GET but topics in body. Person 2 can send {"topics": ["..."], "per_topic": 3}."""
+    return {"resources": get_bookshelf_resources(body.topics, per_topic=body.per_topic)}
 
 
 # title string content string, we can use pydantic to create a model for the post, and then use that model to validate the data that is sent to the server. This way we can ensure that the data is in the correct format and that it contains all the required fields.
